@@ -1,91 +1,108 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { io } from 'socket.io-client';
 
 const SERVER_URL = 'http://localhost:3001';
 
 export default function App() {
   const [username, setUsername] = useState(() =>
-    localStorage.getItem('chat-username') || ''
+    localStorage.getItem('board-username') || ''
   );
-  const [input, setInput] = useState('');
-  const [messages, setMessages] = useState([]);
-  const bottomRef = useRef(null);
+  const [isJoined, setIsJoined] = useState(false);
+  const [number, setNumber] = useState(null);
+  const [error, setError] = useState('');
+  const [note, setNote] = useState(''); // ← 入力欄の状態
 
   const socket = useMemo(() => io(SERVER_URL, { autoConnect: false }), []);
 
   useEffect(() => {
     socket.connect();
-    socket.on('history', list => setMessages(list));
-    socket.on('message', msg => setMessages(prev => [...prev, msg]));
+
+    socket.on('roll', ({ number }) => {
+      setError('');
+      setNumber(number);
+    });
+
+    socket.on('roll:error', ({ message }) => {
+      setError(message || 'エラーが発生しました。');
+    });
+
+    // （任意）サーバーからACKが来る場合に備えて
+    socket.on('note:updated', ({ ok }) => {
+      // console.log('note saved?', ok);
+    });
+
     return () => {
-      socket.off('history');
-      socket.off('message');
+      socket.off('roll');
+      socket.off('roll:error');
+      socket.off('note:updated');
       socket.disconnect();
     };
   }, [socket]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
-
-  function send() {
-    const name = username.trim() || 'guest';
-    localStorage.setItem('chat-username', name);
-    const text = input.trim();
-    if (!text) return;
-    socket.emit('send', { user: name, text });
-    setInput('');
+  function join() {
+    const name = (username || '').trim() || 'guest';
+    localStorage.setItem('board-username', name);
+    socket.emit('login', { name }); // 自分だけへ割り当て通知が返る（socket.emit / io.emit の違いは公式参照） :contentReference[oaicite:7]{index=7}
+    setIsJoined(true);
   }
 
-  function onKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
+  function onChangeNote(e) {
+    const value = e.target.value;
+    setNote(value);              // controlled input（stateが真実の単一ソース）
+    socket.emit('note:update', { // 入力のたびにサーバーへ送る（最小実装）
+      text: value
+    });
   }
 
   return (
     <div className="h-full grid grid-rows-[auto_1fr_auto] bg-gray-100">
       <header className="p-3 bg-white shadow flex gap-2 items-center">
-        <h1 className="text-xl font-bold">💬 React Chat</h1>
-        <input
-          className="ml-auto border rounded px-3 py-2 text-sm"
-          placeholder="Your name"
-          value={username}
-          onChange={e => setUsername(e.target.value)}
-          maxLength={32}
-        />
+        <h1 className="text-xl font-bold">🎲 Unique Number BoardGame</h1>
+        {!isJoined ? (
+          <>
+            <input
+              className="ml-auto border rounded px-3 py-2 text-sm"
+              placeholder="Your name"
+              value={username}
+              onChange={e => setUsername(e.target.value)}
+              maxLength={32}
+            />
+            <button onClick={join} className="px-4 py-2 rounded bg-black text-white">
+              Join
+            </button>
+          </>
+        ) : (
+          <div className="ml-auto text-sm">👤 {username}</div>
+        )}
       </header>
 
-      <main className="overflow-y-auto p-4 space-y-3">
-        {messages.map(m => (
-          <div key={m.id} className="flex flex-col">
-            <div className="text-xs text-gray-500">
-              <span className="font-semibold">{m.user}</span>
-              <span className="ml-2">
-                {new Date(m.ts).toLocaleString()}
-              </span>
+      <main className="p-6">
+        {!isJoined ? (
+          <div className="text-gray-600">名前を入れて「Join」を押してください。</div>
+        ) : (
+          <>
+            {error && <div className="mb-4 text-red-600">{error}</div>}
+            <div className="text-2xl">
+              {number == null ? '割り当て待ち…' : `あなたの番号： ${number}`}
             </div>
-            <div className="max-w-[70ch] w-fit bg-white rounded-2xl shadow px-4 py-2">
-              {m.text}
+            <div className="mt-6 space-y-2">
+              <label className="block text-sm text-gray-600">あなたのメモ</label>
+              <input
+                type="text"
+                className="w-full max-w-md border rounded px-3 py-2"
+                placeholder="ここに自由に入力できます"
+                value={note}
+                onChange={onChangeNote}
+                maxLength={200}
+              />
+              <p className="text-xs text-gray-500">入力はサーバーへ即時送信されます。</p>
             </div>
-          </div>
-        ))}
-        <div ref={bottomRef} />
+          </>
+        )}
       </main>
 
-      <footer className="p-3 bg-white border-t flex gap-2">
-        <textarea
-          className="flex-1 border rounded px-3 py-2 resize-none h-12"
-          placeholder="Type a message and press Enter"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={onKeyDown}
-          maxLength={1000}
-        />
-        <button onClick={send} className="px-4 py-2 rounded bg-black text-white">
-          Send
-        </button>
+<footer className="p-3 bg-white border-t text-sm text-gray-500">
+        * 重複防止はサーバー側の Set で管理。切断時に番号はプールへ戻ります（`disconnect` を使用）。
       </footer>
     </div>
   );
